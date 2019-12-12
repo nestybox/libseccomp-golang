@@ -160,7 +160,8 @@ const (
 	ActKill ScmpAction = iota
 	// ActTrap throws SIGSYS
 	ActTrap ScmpAction = iota
-	// ActNotify triggers a userspace notification
+	// ActNotify triggers a userspace notification. This action is only usable when
+	// libseccomp API level 5 or higher is supported.
 	ActNotify ScmpAction = iota
 	// ActErrno causes the syscall to return a negative error code. This
 	// code can be set with the SetReturnCode method
@@ -987,11 +988,17 @@ func (f *ScmpFilter) GetNotifFd() ScmpFd {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
+	api, apiErr := getApi()
+	if (apiErr != nil && api == 0) || (apiErr == nil && api < 5) {
+		return fmt.Errorf("the seccomp notification API is only supported in libseccomp 2.4.0 and newer with API level 5 or higher")
+	}
+
 	if !f.valid {
 		return errBadFilter
 	}
 
 	fd := C.seccomp_notify_fd(f.filterCtx)
+
 	return ScmpFd(fd)
 }
 
