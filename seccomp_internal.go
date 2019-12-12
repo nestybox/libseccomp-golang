@@ -576,3 +576,42 @@ func (a scmpFilterAttr) toNative() uint32 {
 		return 0x0
 	}
 }
+
+func (a ScmpSyscallNum) toNative() C.uint32_t {
+	return C.uint32_t(a)
+}
+
+func syscallNumFromNative(a C.int) ScmpSyscallNum {
+	return ScmpSyscallNum(a)
+}
+
+func notifReqFromNative(req *C.struct_seccomp_notif) *ScmpNotifReq {
+
+	scmpArgs := make([]uint64, 6)
+	for i := 0; i < len(scmpArgs); i++ {
+		scmpArgs[i] = uint64(req.data.args[i])
+	}
+
+	scmpData := ScmpNotifData{
+		SyscallNum:   syscallNumFromNative(req.data.nr),
+		Arch:         archFromNative(req.data.arch),
+		InstrPointer: uint64(req.data.instruction_pointer),
+		Args:         scmpArgs,
+	}
+
+	scmpReq := &ScmpNotifReq{
+		Id:    uint64(req.id),
+		Pid:   uint32(req.pid),
+		Flags: uint32(req.flags),
+		Data:  scmpData,
+	}
+
+	return scmpReq
+}
+
+func (scmpResp *ScmpNotifResp) toNative(resp *C.struct_seccomp_notif_resp) {
+	resp.id = C.uint64(scmpResp.Id)
+	resp.val = C.int64(scmpResp.Val)
+	resp.error = C.int32(scmpResp.Error)
+	resp.flags = C.uint32(scmpResp.Flags)
+}

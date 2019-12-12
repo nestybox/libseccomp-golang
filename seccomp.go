@@ -69,8 +69,39 @@ type ScmpCondition struct {
 	Operand2 uint64        `json:"operand_two,omitempty"`
 }
 
-// ScmpSyscall represents a Linux System Call
-type ScmpSyscall int32
+// Seccomp userspace notification structures associated with filters that use the ActNotify action.
+
+// ScmpSyscall identifies a Linux System Call by its number.
+type ScmpSyscallNum int32
+
+// ScmpFd represents a file-descriptor used for seccomp userspace notifications.
+type ScmpFd int32
+
+// ScmpNotifData describes the system call context that triggered a notification.
+type ScmpNotifData struct {
+	SyscallNum   ScmpSyscallNum `json:"syscall,omitempty"`
+	Arch         ScmpArch       `json:"arch,omitempty"`
+	InstrPointer uint64         `json:"instr_pointer,omitempty"`
+	Args         []uint64       `json:"args,omitempty"`
+}
+
+// ScmpNotifReq represents a seccomp userspace notification. See NotifReceive() for
+// further details.
+type ScmpNotifReq struct {
+	Id    uint64        `json:"id,omitempty"`
+	Pid   uint32        `json:"pid,omitempty"`
+	Flags uint32        `json:"flags,omitempty"`
+	Data  ScmpNotifData `json:"data,omitempty"`
+}
+
+// ScmpNotifResp represents a seccomp userspace notification response. See NotifRespond()
+// for further details.
+type ScmpNotifResp struct {
+	Id    uint64 `json:"id,omitempty"`
+	Val   uint64 `json:"val,omitempty"`
+	Error int32  `json:"error,omitempty"`
+	Flags uint32 `json:"flags,omitempty"`
+}
 
 // Exported Constants
 
@@ -129,6 +160,8 @@ const (
 	ActKill ScmpAction = iota
 	// ActTrap throws SIGSYS
 	ActTrap ScmpAction = iota
+	// ActNotify triggers a userspace notification
+	ActNotify ScmpAction = iota
 	// ActErrno causes the syscall to return a negative error code. This
 	// code can be set with the SetReturnCode method
 	ActErrno ScmpAction = iota
@@ -170,6 +203,11 @@ const (
 	// CompareMaskedEqual returns true if the argument is equal to the given
 	// value, when masked (bitwise &) against the second given value
 	CompareMaskedEqual ScmpCompareOp = iota
+)
+
+const (
+	// Userspace notification response flags
+	NotifRespFlagContinue uint32 = 1
 )
 
 // Helpers for types
@@ -299,6 +337,8 @@ func (a ScmpAction) String() string {
 	case ActTrace:
 		return fmt.Sprintf("Action: Notify tracing processes with code %d",
 			(a >> 16))
+	case ActNotify:
+		return "Action: Notify userspace"
 	case ActLog:
 		return "Action: Log system call"
 	case ActAllow:
@@ -934,5 +974,85 @@ func (f *ScmpFilter) ExportBPF(file *os.File) error {
 		return errRc(retCode)
 	}
 
+	return nil
+}
+
+// Userspace Notification API
+
+// GetNotifFd returns the userspace notification file descriptor associated with the given
+// filter context. Such a file descriptor is only valid if the filter uses the ActNotify
+// action. The file descriptor can be used to retrieve and respond to notifications
+// associated with the filter (see NotifReceive(), NotifRespond(), and NotifIdValid()).
+func (f *ScmpFilter) GetNotifFd() ScmpFd {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
+	if !f.valid {
+		return errBadFilter
+	}
+
+	fd := C.seccomp_notify_fd(f.filterCtx)
+	return ScmpFd(fd)
+}
+
+// NotifReceive retrieves a seccomp userspace notification from a filter whose ActNotify
+// action has triggered. The caller is expected to process the notification and return a
+// response via NotifRespond(). Each invocation of this function returns one
+// notification. As multiple notifications may be pending at any time, this function is
+// normally called within a polling loop.
+func NotifReceive(fd ScmpFd) (*ScmpNotifReq, error) {
+	var req *C.struct_seccomp_notif
+	var resp *C.struct_seccomp_notif_resp
+
+	// we only use the request here; the response is unused
+	if retCode := C.seccomp_notify_alloc(&req, &resp); retCode != 0 {
+		return nil, errRc(retCode)
+	}
+
+	defer func() {
+		C.free(req)
+		C.free(resp)
+	}()
+
+	if retCode := C.seccomp_notify_receive(C.int(fd), req); retCode != 0 {
+		return nil, errRc(retCode)
+	}
+
+	return notifReqFromNative(req), nil
+}
+
+// NotifRespond responds to a notification retrieved via NotifReceive. The response Id
+// must match that of an outstanding notification retrieved via NotifReceive.
+func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
+	var req *C.struct_seccomp_notif
+	var resp *C.struct_seccomp_notif_resp
+
+	// we only use the reponse here; the request is discarded
+	if retCode := C.seccomp_notify_alloc(&req, &resp); retCode != 0 {
+		return errRc(retCode)
+	}
+
+	defer func() {
+		C.free(req)
+		C.free(resp)
+	}()
+
+	scmpResp.toNative(resp)
+
+	if retCode := C.seccomp_notify_respond(C.int(fd), resp); retCode != 0 {
+		return errRc(retCode)
+	}
+
+	return nil
+}
+
+// NotifIdValid checks if a notification is still valid. An return value of nil means the
+// notification is still valid. Otherwise the notification is not valid. This can be used
+// to mitigate time-of-check-time-of-use (TOCTOU) attacks by ensuring a notification is
+// valid just before responding to it.
+func NotifIdValid(fd ScmpFd, id uint64) error {
+	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64(id)); retCode != 0 {
+		return errRc(retCode)
+	}
 	return nil
 }
