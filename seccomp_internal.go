@@ -14,7 +14,8 @@ import (
 // Get the seccomp header in scope
 // Need stdlib.h for free() on cstrings
 
-// #cgo pkg-config: libseccomp
+// #cgo CFLAGS: -I../seccomp/include
+// #cgo LDFLAGS: -L../seccomp/src/.libs -lseccomp
 /*
 #include <errno.h>
 #include <stdlib.h>
@@ -577,24 +578,29 @@ func (a scmpFilterAttr) toNative() uint32 {
 	}
 }
 
-func (a ScmpSyscallNum) toNative() C.uint32_t {
+func (a ScmpSyscall) toNative() C.uint32_t {
 	return C.uint32_t(a)
 }
 
-func syscallNumFromNative(a C.int) ScmpSyscallNum {
-	return ScmpSyscallNum(a)
+func syscallFromNative(a C.int) ScmpSyscall {
+	return ScmpSyscall(a)
 }
 
-func notifReqFromNative(req *C.struct_seccomp_notif) *ScmpNotifReq {
+func notifReqFromNative(req *C.struct_seccomp_notif) (*ScmpNotifReq, error) {
 
 	scmpArgs := make([]uint64, 6)
 	for i := 0; i < len(scmpArgs); i++ {
 		scmpArgs[i] = uint64(req.data.args[i])
 	}
 
+	arch, err := archFromNative(req.data.arch)
+	if err != nil {
+		return nil, err
+	}
+
 	scmpData := ScmpNotifData{
-		SyscallNum:   syscallNumFromNative(req.data.nr),
-		Arch:         archFromNative(req.data.arch),
+		Syscall:      syscallFromNative(req.data.nr),
+		Arch:         arch,
 		InstrPointer: uint64(req.data.instruction_pointer),
 		Args:         scmpArgs,
 	}
@@ -606,12 +612,12 @@ func notifReqFromNative(req *C.struct_seccomp_notif) *ScmpNotifReq {
 		Data:  scmpData,
 	}
 
-	return scmpReq
+	return scmpReq, nil
 }
 
 func (scmpResp *ScmpNotifResp) toNative(resp *C.struct_seccomp_notif_resp) {
-	resp.id = C.uint64(scmpResp.Id)
-	resp.val = C.int64(scmpResp.Val)
-	resp.error = C.int32(scmpResp.Error)
-	resp.flags = C.uint32(scmpResp.Flags)
+	resp.id = C.__u64(scmpResp.Id)
+	resp.val = C.__s64(scmpResp.Val)
+	resp.error = C.__s32(scmpResp.Error)
+	resp.flags = C.__u32(scmpResp.Flags)
 }

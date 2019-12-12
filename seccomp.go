@@ -20,9 +20,10 @@ import (
 
 // C wrapping code
 
-// #cgo pkg-config: libseccomp
+// #cgo CFLAGS: -I../seccomp/include
+// #cgo LDFLAGS: -L../seccomp/src/.libs -lseccomp
 // #include <stdlib.h>
-// #include <seccomp.h>
+// #include "seccomp.h"
 import "C"
 
 // Exported types
@@ -72,17 +73,17 @@ type ScmpCondition struct {
 // Seccomp userspace notification structures associated with filters that use the ActNotify action.
 
 // ScmpSyscall identifies a Linux System Call by its number.
-type ScmpSyscallNum int32
+type ScmpSyscall int32
 
 // ScmpFd represents a file-descriptor used for seccomp userspace notifications.
 type ScmpFd int32
 
 // ScmpNotifData describes the system call context that triggered a notification.
 type ScmpNotifData struct {
-	SyscallNum   ScmpSyscallNum `json:"syscall,omitempty"`
-	Arch         ScmpArch       `json:"arch,omitempty"`
-	InstrPointer uint64         `json:"instr_pointer,omitempty"`
-	Args         []uint64       `json:"args,omitempty"`
+	Syscall      ScmpSyscall `json:"syscall,omitempty"`
+	Arch         ScmpArch    `json:"arch,omitempty"`
+	InstrPointer uint64      `json:"instr_pointer,omitempty"`
+	Args         []uint64    `json:"args,omitempty"`
 }
 
 // ScmpNotifReq represents a seccomp userspace notification. See NotifReceive() for
@@ -984,22 +985,22 @@ func (f *ScmpFilter) ExportBPF(file *os.File) error {
 // filter context. Such a file descriptor is only valid if the filter uses the ActNotify
 // action. The file descriptor can be used to retrieve and respond to notifications
 // associated with the filter (see NotifReceive(), NotifRespond(), and NotifIdValid()).
-func (f *ScmpFilter) GetNotifFd() ScmpFd {
+func (f *ScmpFilter) GetNotifFd() (ScmpFd, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
-	api, apiErr := getApi()
-	if (apiErr != nil && api == 0) || (apiErr == nil && api < 5) {
-		return fmt.Errorf("the seccomp notification API is only supported in libseccomp 2.4.0 and newer with API level 5 or higher")
+	if !f.valid {
+		return -1, errBadFilter
 	}
 
-	if !f.valid {
-		return errBadFilter
+	api, apiErr := getApi()
+	if (apiErr != nil && api == 0) || (apiErr == nil && api < 5) {
+		return -1, fmt.Errorf("the seccomp notification API is only supported in libseccomp 2.4.0 and newer with API level 5 or higher")
 	}
 
 	fd := C.seccomp_notify_fd(f.filterCtx)
 
-	return ScmpFd(fd)
+	return ScmpFd(fd), nil
 }
 
 // NotifReceive retrieves a seccomp userspace notification from a filter whose ActNotify
@@ -1017,15 +1018,15 @@ func NotifReceive(fd ScmpFd) (*ScmpNotifReq, error) {
 	}
 
 	defer func() {
-		C.free(req)
-		C.free(resp)
+		C.free(unsafe.Pointer(req))
+		C.free(unsafe.Pointer(resp))
 	}()
 
 	if retCode := C.seccomp_notify_receive(C.int(fd), req); retCode != 0 {
 		return nil, errRc(retCode)
 	}
 
-	return notifReqFromNative(req), nil
+	return notifReqFromNative(req)
 }
 
 // NotifRespond responds to a notification retrieved via NotifReceive. The response Id
@@ -1040,8 +1041,8 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 	}
 
 	defer func() {
-		C.free(req)
-		C.free(resp)
+		C.free(unsafe.Pointer(req))
+		C.free(unsafe.Pointer(resp))
 	}()
 
 	scmpResp.toNative(resp)
@@ -1058,7 +1059,7 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 // to mitigate time-of-check-time-of-use (TOCTOU) attacks by ensuring a notification is
 // valid just before responding to it.
 func NotifIdValid(fd ScmpFd, id uint64) error {
-	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64(id)); retCode != 0 {
+	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id)); retCode != 0 {
 		return errRc(retCode)
 	}
 	return nil
