@@ -35,6 +35,18 @@ type VersionError struct {
 	minimum string
 }
 
+// Tracks the libseccomp API level
+var apiLevel uint
+
+func init() {
+	// this forces the cgo libseccomp to initialize internal variables which must be set
+	// before other libseccomp APIs are called
+	api, err := getApi()
+	if err != nil {
+		apiLevel = api
+	}
+}
+
 func (e VersionError) Error() string {
 	format := "Libseccomp version too low: "
 	if e.message != "" {
@@ -416,7 +428,11 @@ func GetApi() (uint, error) {
 // See the seccomp_api_get(3) man page for details on available API levels:
 // https://github.com/seccomp/libseccomp/blob/master/doc/man/man3/seccomp_api_get.3
 func SetApi(api uint) error {
-	return setApi(api)
+	if err := setApi(api); err != nil {
+		return err
+	}
+	apiLevel = api
+	return nil
 }
 
 // Syscall functions
@@ -1028,9 +1044,10 @@ func (f *ScmpFilter) ExportBPF(file *os.File) error {
 // Userspace Notification API
 
 // GetNotifFd returns the userspace notification file descriptor associated with the given
-// filter context. Such a file descriptor is only valid if the filter uses the ActNotify
-// action. The file descriptor can be used to retrieve and respond to notifications
-// associated with the filter (see NotifReceive(), NotifRespond(), and NotifIdValid()).
+// filter context. Such a file descriptor is only valid after the filter has been loaded
+// and only when the filter uses the ActNotify action. The file descriptor can be used to
+// retrieve and respond to notifications associated with the filter (see NotifReceive(),
+// NotifRespond(), and NotifIdValid()).
 func (f *ScmpFilter) GetNotifFd() (ScmpFd, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -1039,8 +1056,7 @@ func (f *ScmpFilter) GetNotifFd() (ScmpFd, error) {
 		return -1, errBadFilter
 	}
 
-	api, apiErr := getApi()
-	if (apiErr != nil && api == 0) || (apiErr == nil && api < 5) {
+	if apiLevel < 5 {
 		return -1, fmt.Errorf("seccomp notification requires API level >= 5")
 	}
 
@@ -1057,6 +1073,10 @@ func (f *ScmpFilter) GetNotifFd() (ScmpFd, error) {
 func NotifReceive(fd ScmpFd) (*ScmpNotifReq, error) {
 	var req *C.struct_seccomp_notif
 	var resp *C.struct_seccomp_notif_resp
+
+	if apiLevel < 5 {
+		return nil, fmt.Errorf("seccomp notification requires API level >= 5")
+	}
 
 	// we only use the request here; the response is unused
 	if retCode := C.seccomp_notify_alloc(&req, &resp); retCode != 0 {
@@ -1081,6 +1101,10 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 	var req *C.struct_seccomp_notif
 	var resp *C.struct_seccomp_notif_resp
 
+	if apiLevel < 5 {
+		return fmt.Errorf("seccomp notification requires API level >= 5")
+	}
+
 	// we only use the reponse here; the request is discarded
 	if retCode := C.seccomp_notify_alloc(&req, &resp); retCode != 0 {
 		return errRc(retCode)
@@ -1104,6 +1128,10 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 // notification is still valid. Otherwise the notification is not valid. This can be used
 // to mitigate time-of-check-time-of-use (TOCTOU) attacks as described in seccomp_notify_id_valid(2).
 func NotifIdValid(fd ScmpFd, id uint64) error {
+	if apiLevel < 5 {
+		return fmt.Errorf("seccomp notification requires API level >= 5")
+	}
+
 	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id)); retCode != 0 {
 		return errRc(retCode)
 	}
