@@ -35,16 +35,13 @@ type VersionError struct {
 	minimum string
 }
 
-// Tracks the libseccomp API level
+// Caches the libseccomp API level
 var apiLevel uint
 
 func init() {
-	// this forces the cgo libseccomp to initialize internal variables which must be set
-	// before other libseccomp APIs are called
-	api, err := getApi()
-	if err != nil {
-		apiLevel = api
-	}
+	// This forces the cgo libseccomp to initialize its internal API support state,
+	// which is necessary in order to other seccomp APIs to work correctly.
+	GetApi()
 }
 
 func (e VersionError) Error() string {
@@ -418,7 +415,12 @@ func GetLibraryVersion() (major, minor, micro uint) {
 // See the seccomp_api_get(3) man page for details on available API levels:
 // https://github.com/seccomp/libseccomp/blob/master/doc/man/man3/seccomp_api_get.3
 func GetApi() (uint, error) {
-	return getApi()
+	api, err := getApi()
+	if err != nil {
+		return api, err
+	}
+	apiLevel = api
+	return api, err
 }
 
 // SetApi forcibly sets the API level. General use of this function is strongly
@@ -871,8 +873,7 @@ func (f *ScmpFilter) GetNoNewPrivsBit() (bool, error) {
 func (f *ScmpFilter) GetLogBit() (bool, error) {
 	log, err := f.getFilterAttr(filterAttrLog)
 	if err != nil {
-		api, apiErr := getApi()
-		if (apiErr != nil && api == 0) || (apiErr == nil && api < 3) {
+		if apiLevel < 3 {
 			return false, fmt.Errorf("getting the log bit is only supported in libseccomp 2.4.0 and newer with API level 3 or higher")
 		}
 
@@ -925,8 +926,7 @@ func (f *ScmpFilter) SetLogBit(state bool) error {
 
 	err := f.setFilterAttr(filterAttrLog, toSet)
 	if err != nil {
-		api, apiErr := getApi()
-		if (apiErr != nil && api == 0) || (apiErr == nil && api < 3) {
+		if apiLevel < 3 {
 			return fmt.Errorf("setting the log bit is only supported in libseccomp 2.4.0 and newer with API level 3 or higher")
 		}
 	}
@@ -1057,7 +1057,7 @@ func (f *ScmpFilter) GetNotifFd() (ScmpFd, error) {
 	}
 
 	if apiLevel < 5 {
-		return -1, fmt.Errorf("seccomp notification requires API level >= 5")
+		return -1, fmt.Errorf("seccomp notification requires API level >= 5; current level = %d", apiLevel)
 	}
 
 	fd := C.seccomp_notify_fd(f.filterCtx)
@@ -1075,7 +1075,7 @@ func NotifReceive(fd ScmpFd) (*ScmpNotifReq, error) {
 	var resp *C.struct_seccomp_notif_resp
 
 	if apiLevel < 5 {
-		return nil, fmt.Errorf("seccomp notification requires API level >= 5")
+		return nil, fmt.Errorf("seccomp notification requires API level >= 5; current level = %d", apiLevel)
 	}
 
 	// we only use the request here; the response is unused
@@ -1102,7 +1102,7 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 	var resp *C.struct_seccomp_notif_resp
 
 	if apiLevel < 5 {
-		return fmt.Errorf("seccomp notification requires API level >= 5")
+		return fmt.Errorf("seccomp notification requires API level >= 5; current level = %d", apiLevel)
 	}
 
 	// we only use the reponse here; the request is discarded
@@ -1129,7 +1129,7 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 // to mitigate time-of-check-time-of-use (TOCTOU) attacks as described in seccomp_notify_id_valid(2).
 func NotifIdValid(fd ScmpFd, id uint64) error {
 	if apiLevel < 5 {
-		return fmt.Errorf("seccomp notification requires API level >= 5")
+		return fmt.Errorf("seccomp notification requires API level >= 5; current level = %d", apiLevel)
 	}
 
 	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id)); retCode != 0 {
