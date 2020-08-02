@@ -20,8 +20,8 @@ import (
 
 // C wrapping code
 
-// #cgo CFLAGS: -I../seccomp/include
-// #cgo LDFLAGS: -L../seccomp/src/.libs -l:libseccomp.a
+// #cgo CFLAGS: -I../libseccomp/include
+// #cgo LDFLAGS: -L../libseccomp/src/.libs -l:libseccomp.a
 // #include <stdlib.h>
 // #include <seccomp.h>
 import "C"
