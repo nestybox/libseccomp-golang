@@ -5,14 +5,14 @@
 package seccomp
 
 import (
-	"bytes"
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
-	"unsafe"
 )
 
 // Type Function Tests
@@ -660,20 +660,42 @@ type notifTest struct {
 	syscallRet error
 }
 
-// charPtrToStr retrives the string pointer to by arg
-func charPtrToStr(ptr uint64) string {
-	var buf bytes.Buffer
-	var uptr unsafe.Pointer
+func parseProcMemString(fd ScmpFd, pid uint32, addr []uint64) ([]string, error) {
 
-	for i := 0; i < 1024; i++ {
-		uptr = unsafe.Pointer(uintptr(ptr + uint64(i)))
-		b := *((*byte)(uptr))
-		if b == '\x00' {
-			break
-		}
-		buf.WriteByte(b)
+	// open /proc/[pid]/mem
+	name := fmt.Sprintf("/proc/%d/mem", pid)
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %s", name, err)
 	}
-	return buf.String()
+	defer f.Close()
+
+	result := make([]string, len(addr))
+
+	reader := bufio.NewReader(f)
+	var line string
+
+	for i, address := range addr {
+		if address == 0 {
+			result[i] = ""
+		} else {
+
+			// TODO: add limit here ...
+
+			reader.Reset(f)
+			_, err := f.Seek(int64(address), 0)
+			if err != nil {
+				return nil, fmt.Errorf("seek of %s failed: %s", name, err)
+			}
+			line, err = reader.ReadString('\x00')
+			if err != nil {
+				return nil, fmt.Errorf("read of %s at offset %d failed: %s", name, address, err)
+			}
+			result[i] = strings.TrimSuffix(line, "\x00")
+		}
+	}
+
+	return result, nil
 }
 
 // notifHandler handles seccomp notifications and responses
@@ -699,17 +721,33 @@ func notifHandler(ch chan error, fd ScmpFd, tests []notifTest) {
 			return
 		}
 
-		for i, arg := range test.args {
-			reqArg := charPtrToStr(req.Data.Args[i])
-			if arg != reqArg {
-				ch <- fmt.Errorf("Error in syscall arg[%d]: got %s, want %s", i, reqArg, arg)
+		addr := []uint64{req.Data.Args[0], req.Data.Args[1], req.Data.Args[2], req.Data.Args[4]}
+		args, err := parseProcMemString(fd, req.Pid, addr)
+		if err != nil {
+			ch <- fmt.Errorf("Error while parsing notification request args: %s", err)
+			return
+		}
+
+		for i, targ := range test.args {
+			if targ != args[i] {
+				ch <- fmt.Errorf("Error in syscall arg[%d]: got %s, want %s", i, targ, args[i])
 				return
 			}
 		}
 
 		// TOCTOU check
 		if err := NotifIdValid(fd, req.Id); err != nil {
-			ch <- fmt.Errorf("TOCTOU check failed: req.Id is no longer valid: %s\n", err)
+
+			// Need to respond as otherwise TestNotif will hang waiting for the syscall.
+			resp := &ScmpNotifResp{
+				Id:    req.Id,
+				Error: 2,
+				Val:   test.respVal,
+				Flags: test.respFlags,
+			}
+			NotifRespond(fd, resp)
+
+			ch <- fmt.Errorf("TOCTOU check failed: req.Id is no longer valid: %s", err)
 			return
 		}
 
@@ -822,11 +860,12 @@ func TestNotif(t *testing.T) {
 
 	for _, test := range tests {
 		if err := syscall.Mount(test.args[0], test.args[1], test.args[2], 0, ""); err != test.syscallRet {
-			t.Errorf("Error in syscall: want \"%s\", got \"%s\"\n", test.syscallRet, err)
+			t.Errorf("Error in syscall: want no error, got \"%s\"\n", err)
 		}
 		err = <-ch
 		if err != nil {
 			t.Errorf(err.Error())
+			return
 		}
 	}
 }
