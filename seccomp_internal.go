@@ -14,8 +14,8 @@ import (
 // Get the seccomp header in scope
 // Need stdlib.h for free() on cstrings
 
-// #cgo CFLAGS: -I../seccomp/include
-// #cgo LDFLAGS: -L../seccomp/src/.libs -l:libseccomp.a
+// #cgo CFLAGS: -I../libseccomp/include
+// #cgo LDFLAGS: -L../libseccomp/src/.libs -l:libseccomp.a
 /*
 #include <errno.h>
 #include <stdlib.h>
