@@ -1088,7 +1088,20 @@ func NotifReceive(fd ScmpFd) (*ScmpNotifReq, error) {
 		C.free(unsafe.Pointer(resp))
 	}()
 
-	if retCode := C.seccomp_notify_receive(C.int(fd), req); retCode != 0 {
+	for {
+		retCode, errno := C.seccomp_notify_receive(C.int(fd), req)
+		if retCode == 0 {
+			break
+		}
+
+		if errno == syscall.EINTR {
+			continue
+		}
+
+		if errno == syscall.ENOENT {
+			return nil, errno
+		}
+
 		return nil, errRc(retCode)
 	}
 
@@ -1117,7 +1130,20 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 
 	scmpResp.toNative(resp)
 
-	if retCode := C.seccomp_notify_respond(C.int(fd), resp); retCode != 0 {
+	for {
+		retCode, errno := C.seccomp_notify_respond(C.int(fd), resp)
+		if retCode == 0 {
+			break
+		}
+
+		if errno == syscall.EINTR {
+			continue
+		}
+
+		 if errno == syscall.ENOENT {
+			return errno
+		}
+
 		return errRc(retCode)
 	}
 
@@ -1135,5 +1161,23 @@ func NotifIdValid(fd ScmpFd, id uint64) error {
 	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id)); retCode != 0 {
 		return errRc(retCode)
 	}
+
+	for {
+		retCode, errno := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id))
+		if retCode == 0 {
+			break
+		}
+
+		if errno == syscall.EINTR {
+			continue
+		}
+
+		if errno == syscall.ENOENT {
+			return errno
+		}
+
+		return errRc(retCode)
+	}
+
 	return nil
 }
