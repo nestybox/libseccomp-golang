@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Public API specification for libseccomp Go bindings
@@ -1140,7 +1141,7 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 			continue
 		}
 
-		 if errno == syscall.ENOENT {
+		if errno == syscall.ENOENT {
 			return errno
 		}
 
@@ -1156,10 +1157,6 @@ func NotifRespond(fd ScmpFd, scmpResp *ScmpNotifResp) error {
 func NotifIdValid(fd ScmpFd, id uint64) error {
 	if apiLevel < 5 {
 		return fmt.Errorf("seccomp notification requires API level >= 5; current level = %d", apiLevel)
-	}
-
-	if retCode := C.seccomp_notify_id_valid(C.int(fd), C.uint64_t(id)); retCode != 0 {
-		return errRc(retCode)
 	}
 
 	for {
